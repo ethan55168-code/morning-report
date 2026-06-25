@@ -1,6 +1,5 @@
 import os
 import json
-import xml.etree.ElementTree as ET
 import urllib.request
 from datetime import datetime, timedelta
 import pytz
@@ -8,6 +7,27 @@ import yfinance as yf
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+
+NEWS_BLOCKLIST = ['娛樂', '八卦', '明星', '藝人', '韓劇', '電影', '體育', '球賽', '選秀', '偶像', '選手', '賽事', '球隊']
+
+
+def send_alert(message):
+    try:
+        token = os.environ.get('TELEGRAM_TOKEN', '')
+        chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+        if not token or not chat_id:
+            return
+        text = f"⚠️ 晚安日報警告\n\n{message}"
+        data = json.dumps({'chat_id': int(chat_id), 'text': text}).encode('utf-8')
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data=data,
+            headers={'Content-Type': 'application/json; charset=utf-8'}
+        )
+        urllib.request.urlopen(req, timeout=10)
+        print(f"⚠️ Alert sent: {message}")
+    except Exception as e:
+        print(f"Alert send failed: {e}")
 
 
 def get_google_credentials():
@@ -109,6 +129,8 @@ def get_all_news(max_total=10):
     def add_titles(titles):
         for t in titles:
             t = t.strip()
+            if any(kw in t for kw in NEWS_BLOCKLIST):
+                continue
             key = t.lower().replace(' ', '')
             if t and key not in seen:
                 seen.add(key)
@@ -163,6 +185,7 @@ def get_macro_data(api_key):
         ('PCEPILFE', '核心 PCE（年增率）', 'pc1', '%'),
     ]
     results = []
+    now = datetime.now()
     for series_id, label, units, suffix in indicators:
         try:
             url = (f"https://api.stlouisfed.org/fred/series/observations"
@@ -175,7 +198,10 @@ def get_macro_data(api_key):
                 continue
             val = float(obs[0]['value'])
             date_str = obs[0]['date'][:7]
-            results.append(f"• {label}：{val:.2f}{suffix}（{date_str}）")
+            obs_date = datetime.strptime(date_str + '-01', '%Y-%m-%d')
+            days_old = (now - obs_date).days
+            fresh = ' 🆕' if days_old <= 40 else ''
+            results.append(f"• {label}：{val:.2f}{suffix}（{date_str}）{fresh}")
         except Exception as e:
             print(f"FRED {series_id} error: {e}")
     return results
@@ -218,7 +244,7 @@ def build_report(emails, cal_today, cal_tomorrow, market, news, macro, taipei_ti
     lines += cal_tomorrow if cal_tomorrow else ["明日無排程"]
 
     if market:
-        lines += ["", "════════════════════════", "", "📊 美股即時數據"]
+        lines += ["", "════════════════════════", "", "📊 美股盤中數據（23:00 台北時間截取）"]
         for name in ['S&P 500', 'Nasdaq', '道瓊']:
             lines.append(fmt_market(name, market.get(name)))
 
@@ -262,14 +288,18 @@ def main():
     fred_api_key = os.environ.get('FRED_API_KEY', '')
 
     print("Getting Google credentials...")
-    creds = get_google_credentials()
+    try:
+        creds = get_google_credentials()
+    except Exception as e:
+        send_alert(f"Google 憑證失敗，Gmail 和 Calendar 無法讀取。\n可能需要重新授權。\n錯誤：{e}")
+        creds = None
 
     print("Fetching Gmail...")
-    emails = get_gmail_summary(creds, today_date)
+    emails = get_gmail_summary(creds, today_date) if creds else []
 
     print("Fetching Calendar...")
-    cal_today = get_calendar_events(creds, today_date)
-    cal_tomorrow = get_calendar_events(creds, tomorrow_date)
+    cal_today = get_calendar_events(creds, today_date) if creds else []
+    cal_tomorrow = get_calendar_events(creds, tomorrow_date) if creds else []
 
     print("Fetching US market data...")
     market = get_us_market()
@@ -279,6 +309,8 @@ def main():
 
     print("Fetching news...")
     news = get_all_news()
+    if len(news) < 3:
+        send_alert(f"新聞抓取異常，只取得 {len(news)} 篇，所有來源可能都被封鎖。")
 
     print("Building report...")
     report = build_report(emails, cal_today, cal_tomorrow, market, news, macro, taipei_time)
