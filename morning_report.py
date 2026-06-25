@@ -1,7 +1,10 @@
 import os
 import json
+import base64
 import urllib.request
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import pytz
 import yfinance as yf
 import pandas as pd
@@ -9,26 +12,9 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
+RECIPIENT_EMAIL = 'ethan55168@gmail.com'
+
 NEWS_BLOCKLIST = ['娛樂', '八卦', '明星', '藝人', '韓劇', '電影', '體育', '球賽', '選秀', '偶像', '選手', '賽事', '球隊']
-
-
-def send_alert(message):
-    try:
-        token = os.environ.get('TELEGRAM_TOKEN', '')
-        chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
-        if not token or not chat_id:
-            return
-        text = f"⚠️ 早晨日報警告\n\n{message}"
-        data = json.dumps({'chat_id': int(chat_id), 'text': text}).encode('utf-8')
-        req = urllib.request.Request(
-            f'https://api.telegram.org/bot{token}/sendMessage',
-            data=data,
-            headers={'Content-Type': 'application/json; charset=utf-8'}
-        )
-        urllib.request.urlopen(req, timeout=10)
-        print(f"⚠️ Alert sent: {message}")
-    except Exception as e:
-        print(f"Alert send failed: {e}")
 
 
 def get_google_credentials():
@@ -38,7 +24,10 @@ def get_google_credentials():
         token_uri='https://oauth2.googleapis.com/token',
         client_id=os.environ['GOOGLE_CLIENT_ID'],
         client_secret=os.environ['GOOGLE_CLIENT_SECRET'],
-        scopes=['https://www.googleapis.com/auth/calendar.readonly']
+        scopes=[
+            'https://www.googleapis.com/auth/calendar.readonly',
+            'https://www.googleapis.com/auth/gmail.send',
+        ]
     )
     creds.refresh(Request())
     return creds
@@ -221,15 +210,16 @@ def get_tech_earnings(days_back=2):
     return recent
 
 
-def fmt_row(name, data):
+def fmt_row_html(name, data):
     if data is None:
-        return f"• {name}：暫無資料"
+        return f'<div class="row">• {name}：暫無資料</div>'
     c = data['close']
     close_str = f"{c:,.0f}" if c > 1000 else f"{c:.2f}"
-    return f"• {name}：{close_str}　{data['arrow']}{abs(data['pct']):.2f}%"
+    color = 'up' if data['pct'] >= 0 else 'down'
+    return f'<div class="row">• {name}：<strong>{close_str}</strong>　<span class="{color}">{data["arrow"]}{abs(data["pct"]):.2f}%</span></div>'
 
 
-def build_report(cal_today, market, news, macro, earnings, taipei_time):
+def build_html_report(cal_today, market, news, macro, earnings, taipei_time):
     weekday_map = {
         'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
         'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
@@ -237,63 +227,81 @@ def build_report(cal_today, market, news, macro, earnings, taipei_time):
     today = taipei_time.strftime('%Y-%m-%d')
     weekday = weekday_map[taipei_time.strftime('%A')]
 
-    lines = [
-        f"🌅 早晨日報｜{today} {weekday}",
-        "════════════════════════",
-        "",
-        "🗓 今日行程",
-    ]
-    lines += cal_today if cal_today else ["今日無排程"]
+    cal_html = ''.join(f'<div class="row">{e}</div>' for e in cal_today) if cal_today else '<div class="row muted">今日無排程</div>'
 
-    lines += [
-        "",
-        "════════════════════════",
-        "",
-        "📊 昨日市場收盤",
-        "",
-        "🇹🇼 台灣市場",
-        fmt_row('台灣加權指數', market.get('台灣加權指數')),
-        "",
-        "🌍 全球市場",
-        fmt_row('S&P 500', market.get('S&P 500')),
-        fmt_row('Nasdaq', market.get('Nasdaq')),
-        fmt_row('道瓊', market.get('道瓊')),
-        fmt_row('黃金', market.get('黃金')),
-        fmt_row('原油(WTI)', market.get('原油(WTI)')),
-    ]
+    tw_html = fmt_row_html('台灣加權指數', market.get('台灣加權指數'))
+    global_html = ''.join([
+        fmt_row_html('S&P 500', market.get('S&P 500')),
+        fmt_row_html('Nasdaq', market.get('Nasdaq')),
+        fmt_row_html('道瓊', market.get('道瓊')),
+        fmt_row_html('黃金', market.get('黃金')),
+        fmt_row_html('原油(WTI)', market.get('原油(WTI)')),
+    ])
 
+    earnings_html = ''
     if earnings:
-        lines += ["", "════════════════════════", "", "💼 近期科技財報"]
-        lines += earnings
+        items = ''.join(f'<div class="row">{e}</div>' for e in earnings)
+        earnings_html = f'<h2>💼 近期科技財報</h2>{items}'
 
-    if macro:
-        lines += ["", "════════════════════════", "", "📈 總經數據"]
-        lines += macro
+    macro_html = ''.join(f'<div class="row">{m}</div>' for m in macro) if macro else '<div class="row muted">暫無資料</div>'
 
-    if news:
-        lines += ["", "════════════════════════", "", "📰 昨晚財經新聞", ""]
-        for i, t in enumerate(news, 1):
-            lines.append(f"{i}. {t}")
-            lines.append("")
+    news_html = ''.join(f'<div class="news-item">{i}. {t}</div>' for i, t in enumerate(news, 1)) if news else '<div class="muted">暫無新聞</div>'
 
-    lines += ["", "════════════════════════", "由 GitHub Actions 自動發送"]
-    return "\n".join(lines)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;max-width:580px;margin:0 auto;padding:24px;color:#1a1a1a;background:#fff}}
+  h1{{font-size:22px;margin:0 0 4px}}
+  .date{{color:#888;font-size:14px;margin-bottom:28px}}
+  h2{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#aaa;margin:28px 0 10px;border-bottom:1px solid #eee;padding-bottom:6px}}
+  .row{{padding:4px 0;font-size:15px;line-height:1.6}}
+  .up{{color:#c0392b;font-weight:600}}
+  .down{{color:#27ae60;font-weight:600}}
+  .muted{{color:#aaa;font-size:14px}}
+  .market-label{{font-size:13px;font-weight:600;color:#555;margin:10px 0 4px}}
+  .news-item{{padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:14px;line-height:1.6}}
+  .news-item:last-child{{border-bottom:none}}
+  .footer{{color:#ccc;font-size:12px;margin-top:36px;text-align:center;padding-top:16px;border-top:1px solid #eee}}
+</style>
+</head>
+<body>
+<h1>🌅 早晨日報</h1>
+<div class="date">{today} {weekday}</div>
+
+<h2>🗓 今日行程</h2>
+{cal_html}
+
+<h2>📊 昨日市場收盤</h2>
+<div class="market-label">🇹🇼 台灣市場</div>
+{tw_html}
+<div class="market-label">🌍 全球市場</div>
+{global_html}
+
+{earnings_html}
+
+<h2>📈 總經數據</h2>
+{macro_html}
+
+<h2>📰 昨晚財經新聞</h2>
+{news_html}
+
+<div class="footer">由 GitHub Actions 自動發送</div>
+</body>
+</html>"""
 
 
-def send_telegram(text):
-    token = os.environ['TELEGRAM_TOKEN']
-    chat_id = os.environ['TELEGRAM_CHAT_ID']
-    data = json.dumps({'chat_id': int(chat_id), 'text': text}).encode('utf-8')
-    req = urllib.request.Request(
-        f'https://api.telegram.org/bot{token}/sendMessage',
-        data=data,
-        headers={'Content-Type': 'application/json; charset=utf-8'}
-    )
-    res = urllib.request.urlopen(req, timeout=30).read()
-    if json.loads(res).get('ok'):
-        print('✅ Telegram sent')
-    else:
-        print('❌ Telegram error:', res)
+def send_gmail(subject, html_body, creds):
+    service = build('gmail', 'v1', credentials=creds)
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = RECIPIENT_EMAIL
+    msg['To'] = RECIPIENT_EMAIL
+    msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    result = service.users().messages().send(userId='me', body={'raw': raw}).execute()
+    print(f'✅ Gmail sent: {result["id"]}')
 
 
 def main():
@@ -308,11 +316,11 @@ def main():
     try:
         creds = get_google_credentials()
     except Exception as e:
-        send_alert(f"Google 憑證失敗，Calendar 無法讀取。\n可能需要重新授權。\n錯誤：{e}")
-        creds = None
+        print(f"❌ Google credentials failed: {e}")
+        return
 
     print("Fetching Calendar...")
-    cal_today = get_calendar_events(creds, today_date) if creds else []
+    cal_today = get_calendar_events(creds, today_date)
 
     print("Fetching market data...")
     market = get_market_data()
@@ -320,7 +328,7 @@ def main():
     print("Fetching news...")
     news = get_all_news()
     if len(news) < 3:
-        send_alert(f"新聞抓取異常，只取得 {len(news)} 篇，所有來源可能都被封鎖。")
+        print(f"⚠️ Warning: only {len(news)} news articles fetched")
 
     print("Fetching macro data...")
     macro = get_macro_data(fred_api_key) if fred_api_key else []
@@ -329,11 +337,15 @@ def main():
     earnings = get_tech_earnings()
 
     print("Building report...")
-    report = build_report(cal_today, market, news, macro, earnings, taipei_time)
-    print(report)
+    weekday_map = {
+        'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
+        'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
+    }
+    subject = f"🌅 早晨日報｜{taipei_time.strftime('%Y-%m-%d')} {weekday_map[taipei_time.strftime('%A')]}"
+    html = build_html_report(cal_today, market, news, macro, earnings, taipei_time)
 
-    print("Sending to Telegram...")
-    send_telegram(report)
+    print("Sending via Gmail...")
+    send_gmail(subject, html, creds)
 
 
 if __name__ == '__main__':
