@@ -101,57 +101,50 @@ def get_us_market():
     return results
 
 
-BROWSER_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml,application/rss+xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
-}
-
-
-def fetch_rss_titles(url, max_items):
-    req = urllib.request.Request(url, headers=BROWSER_HEADERS)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        root = ET.fromstring(resp.read())
-    items = root.findall('.//item')
-    titles = []
-    for item in items[:max_items]:
-        title = item.find('title')
-        if title is not None and title.text:
-            titles.append(title.text.strip())
-    return titles
-
-
 def get_all_news():
+    import feedparser
     sections = []
 
     # 鉅亨網
-    try:
-        url = "https://api.cnyes.com/media/api/v1/newslist/category/headline_all?limit=10"
-        headers = {**BROWSER_HEADERS, 'Referer': 'https://news.cnyes.com/', 'Origin': 'https://news.cnyes.com'}
-        req = urllib.request.Request(url, headers=headers)
-        res = json.loads(urllib.request.urlopen(req, timeout=10).read())
-        items = res.get('items', {}).get('data', [])
-        titles = [item.get('title', '').strip() for item in items[:4] if item.get('title')]
-        if titles:
-            sections.append(('鉅亨網', titles))
-    except Exception as e:
-        print(f"鉅亨 failed: {e}")
+    for cat in ['tw_stock', 'intl_stock', 'headline_all']:
+        try:
+            url = f"https://api.cnyes.com/media/api/v1/newslist/category/{cat}?limit=10"
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'application/json',
+                'Referer': 'https://news.cnyes.com/',
+            })
+            res = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            items = res.get('items', {}).get('data', [])
+            titles = [item.get('title', '').strip() for item in items[:4] if item.get('title')]
+            if titles:
+                sections.append(('鉅亨網', titles))
+                break
+        except Exception as e:
+            print(f"鉅亨 {cat} failed: {e}")
 
     # IEObserve
     try:
-        titles = fetch_rss_titles('https://www.ieobserve.com/must-read-rss/', 4)
+        feed = feedparser.parse('https://www.ieobserve.com/feed/')
+        titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
+        if not titles:
+            feed = feedparser.parse('https://www.ieobserve.com/must-read-rss/')
+            titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
         if titles:
             sections.append(('IEObserve', titles))
     except Exception as e:
         print(f"IEObserve failed: {e}")
 
     # 財報狗
-    try:
-        titles = fetch_rss_titles('https://statementdog.substack.com/feed', 4)
-        if titles:
-            sections.append(('財報狗', titles))
-    except Exception as e:
-        print(f"財報狗 failed: {e}")
+    for url in ['https://statementdog.substack.com/feed', 'https://statementdog.substack.com/feed.xml']:
+        try:
+            feed = feedparser.parse(url)
+            titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
+            if titles:
+                sections.append(('財報狗', titles))
+                break
+        except Exception as e:
+            print(f"財報狗 failed: {e}")
 
     return sections
 
