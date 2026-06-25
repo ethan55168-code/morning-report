@@ -5,7 +5,6 @@ import urllib.request
 from datetime import datetime, timedelta
 import pytz
 import yfinance as yf
-import pandas as pd
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -18,10 +17,36 @@ def get_google_credentials():
         token_uri='https://oauth2.googleapis.com/token',
         client_id=os.environ['GOOGLE_CLIENT_ID'],
         client_secret=os.environ['GOOGLE_CLIENT_SECRET'],
-        scopes=['https://www.googleapis.com/auth/calendar.readonly']
+        scopes=[
+            'https://www.googleapis.com/auth/calendar.readonly',
+            'https://www.googleapis.com/auth/gmail.readonly',
+        ]
     )
     creds.refresh(Request())
     return creds
+
+
+def get_gmail_summary(creds, date):
+    try:
+        service = build('gmail', 'v1', credentials=creds)
+        d = date.strftime('%Y/%m/%d')
+        tomorrow = (date + timedelta(days=1)).strftime('%Y/%m/%d')
+        query = f'after:{d} before:{tomorrow} -category:promotions -category:social -category:updates'
+        result = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
+        messages = result.get('messages', [])
+        emails = []
+        for msg in messages[:5]:
+            m = service.users().messages().get(userId='me', id=msg['id'], format='metadata',
+                metadataHeaders=['From', 'Subject']).execute()
+            headers = {h['name']: h['value'] for h in m['payload']['headers']}
+            subject = headers.get('Subject', '（無主旨）')
+            sender = headers.get('From', '').split('<')[0].strip().strip('"')
+            snippet = m.get('snippet', '')[:80]
+            emails.append(f"• {sender}｜{subject}\n  {snippet}")
+        return emails
+    except Exception as e:
+        print(f"Gmail error: {e}")
+        return []
 
 
 def get_calendar_events(creds, date):
@@ -52,25 +77,22 @@ def get_calendar_events(creds, date):
         return []
 
 
-def get_market_data():
+def get_us_market():
     symbols = {
-        '台灣加權指數': '^TWII',
         'S&P 500': '^GSPC',
         'Nasdaq': '^IXIC',
         '道瓊': '^DJI',
-        '黃金': 'GC=F',
-        '原油(WTI)': 'CL=F',
     }
     results = {}
     for name, symbol in symbols.items():
         try:
-            hist = yf.Ticker(symbol).history(period='5d')
+            hist = yf.Ticker(symbol).history(period='2d')
             if len(hist) >= 2:
                 prev = hist['Close'].iloc[-2]
                 last = hist['Close'].iloc[-1]
                 pct = ((last - prev) / prev) * 100
                 results[name] = {
-                    'close': round(last, 2),
+                    'price': round(last, 2),
                     'pct': round(pct, 2),
                     'arrow': '▲' if pct >= 0 else '▼'
                 }
@@ -79,7 +101,7 @@ def get_market_data():
     return results
 
 
-def get_rss_news(max_items=4):
+def get_rss_news(max_items=5):
     sources = [
         'https://tw.stock.yahoo.com/rss?category=tw-market',
         'https://tw.stock.yahoo.com/rss?category=intl-markets',
@@ -141,91 +163,53 @@ def get_macro_data(api_key):
     return results
 
 
-def get_tech_earnings(days_back=2):
-    tech_stocks = {
-        'AAPL': 'Apple', 'MSFT': 'Microsoft', 'GOOGL': 'Google',
-        'NVDA': 'NVIDIA', 'META': 'Meta', 'TSLA': 'Tesla',
-        'AMZN': 'Amazon', 'AMD': 'AMD', 'INTC': 'Intel',
-        'QCOM': 'Qualcomm', 'TSM': 'TSMC', 'AVGO': 'Broadcom',
-    }
-    recent = []
-    cutoff = datetime.now(pytz.UTC) - timedelta(days=days_back)
-    for symbol, name in tech_stocks.items():
-        try:
-            t = yf.Ticker(symbol)
-            ed = t.earnings_dates
-            if ed is None or ed.empty:
-                continue
-            past = ed[ed.index <= datetime.now(pytz.UTC)]
-            if past.empty or past.index[0] < cutoff:
-                continue
-            row = past.iloc[0]
-            eps_est = row.get('EPS Estimate')
-            eps_act = row.get('Reported EPS')
-            if eps_act is None or pd.isna(eps_act):
-                continue
-            line = f"• {name}（{symbol}）：EPS {eps_act:.2f}"
-            if eps_est is not None and not pd.isna(eps_est):
-                diff = eps_act - eps_est
-                icon = '✅' if diff >= 0 else '❌'
-                line += f"　{icon}{'超' if diff >= 0 else '低於'}預期 ${abs(diff):.2f}"
-            recent.append(line)
-        except Exception as e:
-            print(f"Earnings {symbol}: {e}")
-    return recent
-
-
-def fmt_row(name, data):
+def fmt_market(name, data):
     if data is None:
         return f"• {name}：暫無資料"
-    c = data['close']
-    close_str = f"{c:,.0f}" if c > 1000 else f"{c:.2f}"
-    return f"• {name}：{close_str}　{data['arrow']}{abs(data['pct']):.2f}%"
+    p = data['price']
+    price_str = f"{p:,.0f}" if p > 1000 else f"{p:.2f}"
+    return f"• {name}：{price_str}　{data['arrow']}{abs(data['pct']):.2f}%"
 
 
-def build_report(cal_today, market, news, macro, earnings, taipei_time):
+def build_report(emails, cal_today, cal_tomorrow, market, news, macro, taipei_time):
     weekday_map = {
         'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
         'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
     }
+    tomorrow_weekday_map = {
+        'Monday': '明日（星期一）', 'Tuesday': '明日（星期二）', 'Wednesday': '明日（星期三）',
+        'Thursday': '明日（星期四）', 'Friday': '明日（星期五）', 'Saturday': '明日（星期六）', 'Sunday': '明日（星期日）'
+    }
     today = taipei_time.strftime('%Y-%m-%d')
     weekday = weekday_map[taipei_time.strftime('%A')]
+    tomorrow_dt = taipei_time + timedelta(days=1)
+    tomorrow_weekday = tomorrow_weekday_map[tomorrow_dt.strftime('%A')]
 
     lines = [
-        f"🌅 早晨日報｜{today} {weekday}",
+        f"🌙 晚安日報｜{today} {weekday}",
         "════════════════════════",
         "",
-        "🗓 今日行程",
+        "📬 今日信件摘要",
     ]
-    lines += cal_today if cal_today else ["今日無排程"]
+    lines += emails if emails else ["今日無重要信件"]
 
-    lines += [
-        "",
-        "════════════════════════",
-        "",
-        "📊 昨日市場收盤",
-        "",
-        "🇹🇼 台灣市場",
-        fmt_row('台灣加權指數', market.get('台灣加權指數')),
-        "",
-        "🌍 全球市場",
-        fmt_row('S&P 500', market.get('S&P 500')),
-        fmt_row('Nasdaq', market.get('Nasdaq')),
-        fmt_row('道瓊', market.get('道瓊')),
-        fmt_row('黃金', market.get('黃金')),
-        fmt_row('原油(WTI)', market.get('原油(WTI)')),
-    ]
+    lines += ["", "📅 今日行程回顧"]
+    lines += cal_today if cal_today else ["今日無行程"]
 
-    if earnings:
-        lines += ["", "════════════════════════", "", "💼 近期科技財報"]
-        lines += earnings
+    lines += [f"", f"🗓 {tomorrow_weekday}行程預覽"]
+    lines += cal_tomorrow if cal_tomorrow else ["明日無排程"]
+
+    if market:
+        lines += ["", "════════════════════════", "", "📊 美股即時數據"]
+        for name in ['S&P 500', 'Nasdaq', '道瓊']:
+            lines.append(fmt_market(name, market.get(name)))
 
     if macro:
         lines += ["", "════════════════════════", "", "📈 總經數據"]
         lines += macro
 
     if news:
-        lines += ["", "════════════════════════", "", "📰 昨晚財經新聞"]
+        lines += ["", "════════════════════════", "", "📰 今日財經新聞"]
         for i, n in enumerate(news, 1):
             lines.append(f"{i}. {n}")
 
@@ -253,6 +237,7 @@ def main():
     taipei_tz = pytz.timezone('Asia/Taipei')
     taipei_time = datetime.now(taipei_tz)
     today_date = taipei_time.date()
+    tomorrow_date = today_date + timedelta(days=1)
     print(f"Running at {taipei_time.strftime('%Y-%m-%d %H:%M:%S')} Taipei time")
 
     fred_api_key = os.environ.get('FRED_API_KEY', '')
@@ -260,23 +245,24 @@ def main():
     print("Getting Google credentials...")
     creds = get_google_credentials()
 
+    print("Fetching Gmail...")
+    emails = get_gmail_summary(creds, today_date)
+
     print("Fetching Calendar...")
     cal_today = get_calendar_events(creds, today_date)
+    cal_tomorrow = get_calendar_events(creds, tomorrow_date)
 
-    print("Fetching market data...")
-    market = get_market_data()
-
-    print("Fetching news...")
-    news = get_rss_news()
+    print("Fetching US market data...")
+    market = get_us_market()
 
     print("Fetching macro data...")
     macro = get_macro_data(fred_api_key) if fred_api_key else []
 
-    print("Fetching tech earnings...")
-    earnings = get_tech_earnings()
+    print("Fetching news...")
+    news = get_rss_news()
 
     print("Building report...")
-    report = build_report(cal_today, market, news, macro, earnings, taipei_time)
+    report = build_report(emails, cal_today, cal_tomorrow, market, news, macro, taipei_time)
     print(report)
 
     print("Sending to Telegram...")
