@@ -101,33 +101,41 @@ def get_us_market():
     return results
 
 
-def get_rss_news(max_items=5):
-    sources = [
-        'https://tw.stock.yahoo.com/rss?category=tw-market',
-        'https://tw.stock.yahoo.com/rss?category=intl-markets',
-        'https://news.ltn.com.tw/rss/business.xml',
-        'https://www.cna.com.tw/rss/aie.xml',
-        'https://feeds.bbci.co.uk/news/business/rss.xml',
-        'https://feeds.marketwatch.com/marketwatch/topstories/',
-    ]
+def get_cnyes_news(max_items=5):
+    categories = ['headline_all', 'tw_stock', 'intl_stock']
     news = []
-    for url in sources:
+    for cat in categories:
         if len(news) >= max_items:
             break
         try:
+            url = f"https://api.cnyes.com/media/api/v1/newslist/category/{cat}?limit=10"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                root = ET.fromstring(resp.read())
-            items = root.findall('.//item')
+            res = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            items = res.get('items', {}).get('data', [])
             for item in items[:max_items - len(news)]:
-                title = item.find('title')
-                if title is not None and title.text:
-                    news.append(title.text.strip())
+                title = item.get('title', '').strip()
+                if title:
+                    news.append(title)
             if news:
-                print(f"News from: {url}")
+                print(f"News from cnyes/{cat}")
                 break
         except Exception as e:
-            print(f"RSS failed {url}: {e}")
+            print(f"cnyes {cat} failed: {e}")
+    if not news:
+        for url in ['https://news.ltn.com.tw/rss/business.xml', 'https://feeds.bbci.co.uk/news/business/rss.xml']:
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    root = ET.fromstring(resp.read())
+                items = root.findall('.//item')
+                for item in items[:max_items]:
+                    title = item.find('title')
+                    if title is not None and title.text:
+                        news.append(title.text.strip())
+                if news:
+                    break
+            except Exception as e:
+                print(f"RSS fallback failed {url}: {e}")
     return news
 
 
@@ -259,7 +267,7 @@ def main():
     macro = get_macro_data(fred_api_key) if fred_api_key else []
 
     print("Fetching news...")
-    news = get_rss_news()
+    news = get_cnyes_news()
 
     print("Building report...")
     report = build_report(emails, cal_today, cal_tomorrow, market, news, macro, taipei_time)
