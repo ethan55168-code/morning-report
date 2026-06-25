@@ -79,42 +79,51 @@ def get_market_data():
     return results
 
 
-def get_cnyes_news(max_items=8):
-    categories = ['headline_all', 'tw_stock', 'intl_stock']
-    news = []
-    for cat in categories:
-        if len(news) >= max_items:
-            break
-        try:
-            url = f"https://api.cnyes.com/media/api/v1/newslist/category/{cat}?limit=10"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            res = json.loads(urllib.request.urlopen(req, timeout=10).read())
-            items = res.get('items', {}).get('data', [])
-            for item in items[:max_items - len(news)]:
-                title = item.get('title', '').strip()
-                if title:
-                    news.append(title)
-            if news:
-                print(f"News from cnyes/{cat}")
-                break
-        except Exception as e:
-            print(f"cnyes {cat} failed: {e}")
-    if not news:
-        for url in ['https://news.ltn.com.tw/rss/business.xml', 'https://feeds.bbci.co.uk/news/business/rss.xml']:
-            try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    root = ET.fromstring(resp.read())
-                items = root.findall('.//item')
-                for item in items[:max_items]:
-                    title = item.find('title')
-                    if title is not None and title.text:
-                        news.append(title.text.strip())
-                if news:
-                    break
-            except Exception as e:
-                print(f"RSS fallback failed {url}: {e}")
-    return news
+def fetch_rss_titles(url, max_items):
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        root = ET.fromstring(resp.read())
+    items = root.findall('.//item')
+    titles = []
+    for item in items[:max_items]:
+        title = item.find('title')
+        if title is not None and title.text:
+            titles.append(title.text.strip())
+    return titles
+
+
+def get_all_news():
+    sections = []
+
+    # 鉅亨網
+    try:
+        url = "https://api.cnyes.com/media/api/v1/newslist/category/headline_all?limit=10"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        res = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        items = res.get('items', {}).get('data', [])
+        titles = [item.get('title', '').strip() for item in items[:4] if item.get('title')]
+        if titles:
+            sections.append(('鉅亨網', titles))
+    except Exception as e:
+        print(f"鉅亨 failed: {e}")
+
+    # IEObserve
+    try:
+        titles = fetch_rss_titles('https://www.ieobserve.com/must-read-rss/', 4)
+        if titles:
+            sections.append(('IEObserve', titles))
+    except Exception as e:
+        print(f"IEObserve failed: {e}")
+
+    # 財報狗
+    try:
+        titles = fetch_rss_titles('https://statementdog.substack.com/feed', 4)
+        if titles:
+            sections.append(('財報狗', titles))
+    except Exception as e:
+        print(f"財報狗 failed: {e}")
+
+    return sections
 
 
 def get_macro_data(api_key):
@@ -191,7 +200,7 @@ def fmt_row(name, data):
     return f"• {name}：{close_str}　{data['arrow']}{abs(data['pct']):.2f}%"
 
 
-def build_report(cal_today, market, news, macro, earnings, taipei_time):
+def build_report(cal_today, market, news_sections, macro, earnings, taipei_time):
     weekday_map = {
         'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
         'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
@@ -232,10 +241,12 @@ def build_report(cal_today, market, news, macro, earnings, taipei_time):
         lines += ["", "════════════════════════", "", "📈 總經數據"]
         lines += macro
 
-    if news:
+    if news_sections:
         lines += ["", "════════════════════════", "", "📰 昨晚財經新聞"]
-        for i, n in enumerate(news, 1):
-            lines.append(f"{i}. {n}")
+        for source, titles in news_sections:
+            lines.append(f"\n【{source}】")
+            for i, t in enumerate(titles, 1):
+                lines.append(f"{i}. {t}")
 
     lines += ["", "════════════════════════", "由 GitHub Actions 自動發送"]
     return "\n".join(lines)
@@ -275,7 +286,7 @@ def main():
     market = get_market_data()
 
     print("Fetching news...")
-    news = get_cnyes_news()
+    news_sections = get_all_news()
 
     print("Fetching macro data...")
     macro = get_macro_data(fred_api_key) if fred_api_key else []
@@ -284,7 +295,7 @@ def main():
     earnings = get_tech_earnings()
 
     print("Building report...")
-    report = build_report(cal_today, market, news, macro, earnings, taipei_time)
+    report = build_report(cal_today, market, news_sections, macro, earnings, taipei_time)
     print(report)
 
     print("Sending to Telegram...")
