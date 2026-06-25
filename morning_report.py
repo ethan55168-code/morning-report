@@ -106,9 +106,10 @@ def get_market_data():
 
 def get_rss_news(max_items=4):
     sources = [
-        'https://udn.com/rssfeed/news/2/6638?ch=news',
-        'https://ctee.com.tw/feed',
-        'https://www.cna.com.tw/cna2018api/api/WD/CnaRss?keytype=1&value=financemarket',
+        'https://tw.stock.yahoo.com/rss?category=tw-market',
+        'https://tw.stock.yahoo.com/rss?category=intl-markets',
+        'https://news.ltn.com.tw/rss/business.xml',
+        'https://www.cna.com.tw/rss/aie.xml',
         'https://feeds.bbci.co.uk/news/business/rss.xml',
         'https://feeds.marketwatch.com/marketwatch/topstories/',
     ]
