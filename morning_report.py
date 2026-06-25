@@ -79,8 +79,15 @@ def get_market_data():
     return results
 
 
+BROWSER_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml,application/rss+xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
+}
+
+
 def fetch_rss_titles(url, max_items):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    req = urllib.request.Request(url, headers=BROWSER_HEADERS)
     with urllib.request.urlopen(req, timeout=10) as resp:
         root = ET.fromstring(resp.read())
     items = root.findall('.//item')
@@ -98,7 +105,8 @@ def get_all_news():
     # 鉅亨網
     try:
         url = "https://api.cnyes.com/media/api/v1/newslist/category/headline_all?limit=10"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {**BROWSER_HEADERS, 'Referer': 'https://news.cnyes.com/', 'Origin': 'https://news.cnyes.com'}
+        req = urllib.request.Request(url, headers=headers)
         res = json.loads(urllib.request.urlopen(req, timeout=10).read())
         items = res.get('items', {}).get('data', [])
         titles = [item.get('title', '').strip() for item in items[:4] if item.get('title')]
@@ -128,18 +136,17 @@ def get_all_news():
 
 def get_macro_data(api_key):
     indicators = [
-        ('FEDFUNDS', '聯準會利率', False),
-        ('UNRATE', '失業率', False),
-        ('CPIAUCSL', 'CPI（年增率）', True),
-        ('PCEPILFE', '核心 PCE（年增率）', True),
+        ('FEDFUNDS', '聯準會利率', 'lin', '%'),
+        ('UNRATE', '失業率', 'lin', '%'),
+        ('CPIAUCSL', 'CPI（年增率）', 'pc1', '%'),
+        ('PCEPILFE', '核心 PCE（年增率）', 'pc1', '%'),
     ]
     results = []
-    for series_id, label, calc_yoy in indicators:
+    for series_id, label, units, suffix in indicators:
         try:
-            limit = 13 if calc_yoy else 2
             url = (f"https://api.stlouisfed.org/fred/series/observations"
                    f"?series_id={series_id}&api_key={api_key}"
-                   f"&sort_order=desc&limit={limit}&file_type=json")
+                   f"&sort_order=desc&limit=2&units={units}&file_type=json")
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             res = json.loads(urllib.request.urlopen(req, timeout=10).read())
             obs = [o for o in res['observations'] if o['value'] != '.']
@@ -147,12 +154,7 @@ def get_macro_data(api_key):
                 continue
             val = float(obs[0]['value'])
             date_str = obs[0]['date'][:7]
-            if calc_yoy and len(obs) >= 13:
-                prev_year = float(obs[12]['value'])
-                yoy = ((val - prev_year) / prev_year) * 100
-                results.append(f"• {label}：{yoy:.1f}%（{date_str}）")
-            else:
-                results.append(f"• {label}：{val:.2f}%（{date_str}）")
+            results.append(f"• {label}：{val:.2f}{suffix}（{date_str}）")
         except Exception as e:
             print(f"FRED {series_id} error: {e}")
     return results

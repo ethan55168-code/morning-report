@@ -17,7 +17,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pytz google-api-python-client google-auth google-auth-httplib2 pandas
+        run: pip install yfinance pytz google-api-python-client google-auth google-auth-httplib2 pandas lxml
 
       - name: Run morning report
         env:
