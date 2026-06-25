@@ -2,9 +2,81 @@ import os
 import json
 import xml.etree.ElementTree as ET
 import urllib.request
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, timedelta
 import pytz
 import yfinance as yf
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+
+
+def get_google_credentials():
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ['GOOGLE_REFRESH_TOKEN'],
+        token_uri='https://oauth2.googleapis.com/token',
+        client_id=os.environ['GOOGLE_CLIENT_ID'],
+        client_secret=os.environ['GOOGLE_CLIENT_SECRET'],
+        scopes=[
+            'https://www.googleapis.com/auth/calendar.readonly',
+            'https://www.googleapis.com/auth/gmail.readonly',
+        ]
+    )
+    creds.refresh(Request())
+    return creds
+
+
+def get_gmail_summary(creds, yesterday):
+    try:
+        service = build('gmail', 'v1', credentials=creds)
+        y = yesterday.strftime('%Y/%m/%d')
+        today = (yesterday + timedelta(days=1)).strftime('%Y/%m/%d')
+        query = f'after:{y} before:{today} -category:promotions -category:social -category:updates'
+        result = service.users().messages().list(userId='me', q=query, maxResults=10).execute()
+        messages = result.get('messages', [])
+        emails = []
+        for msg in messages[:5]:
+            m = service.users().messages().get(userId='me', id=msg['id'], format='metadata',
+                metadataHeaders=['From', 'Subject']).execute()
+            headers = {h['name']: h['value'] for h in m['payload']['headers']}
+            subject = headers.get('Subject', '（無主旨）')
+            sender = headers.get('From', '').split('<')[0].strip().strip('"')
+            snippet = m.get('snippet', '')[:60]
+            emails.append(f"• {sender}｜{subject}\n  {snippet}")
+        return emails
+    except Exception as e:
+        print(f"Gmail error: {e}")
+        return []
+
+
+def get_calendar_events(creds, date):
+    try:
+        service = build('calendar', 'v3', credentials=creds)
+        taipei_tz = pytz.timezone('Asia/Taipei')
+        start = taipei_tz.localize(datetime.combine(date, datetime.min.time()))
+        end = taipei_tz.localize(datetime.combine(date, datetime.max.time()))
+        result = service.events().list(
+            calendarId='primary',
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = result.get('items', [])
+        items = []
+        for e in events:
+            summary = e.get('summary', '（無標題）')
+            start_time = e['start'].get('dateTime', e['start'].get('date', ''))
+            if 'T' in start_time:
+                t = datetime.fromisoformat(start_time).astimezone(taipei_tz).strftime('%H:%M')
+                items.append(f"• {t}　{summary}")
+            else:
+                items.append(f"• 全天　{summary}")
+        return items
+    except Exception as e:
+        print(f"Calendar error: {e}")
+        return []
 
 
 def get_market_data():
@@ -43,7 +115,7 @@ def get_rss_news(url, max_items=3):
         items = root.findall('.//item')[:max_items]
         return [item.find('title').text.strip() for item in items if item.find('title') is not None]
     except Exception as e:
-        print(f"Warning: RSS {url} failed: {e}")
+        print(f"Warning: RSS failed: {e}")
         return []
 
 
@@ -55,7 +127,7 @@ def fmt_row(name, data):
     return f"• {name}：{close_str}　{data['arrow']}{abs(data['pct']):.2f}%"
 
 
-def build_report(market, news_global, news_tw, taipei_time):
+def build_report(emails, cal_yesterday, cal_today, market, news_global, taipei_time):
     weekday_map = {
         'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
         'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
@@ -65,6 +137,20 @@ def build_report(market, news_global, news_tw, taipei_time):
 
     lines = [
         f"🌅 早晨日報｜{today} {weekday}",
+        "════════════════════════",
+        "",
+        "📬 昨日信件摘要",
+    ]
+    lines += emails if emails else ["昨日無重要信件"]
+
+    lines += ["", "📅 昨日行程回顧"]
+    lines += cal_yesterday if cal_yesterday else ["昨日無行程"]
+
+    lines += ["", "🗓 今日行程"]
+    lines += cal_today if cal_today else ["今日無排程"]
+
+    lines += [
+        "",
         "════════════════════════",
         "",
         "📊 昨日市場回顧",
@@ -85,11 +171,6 @@ def build_report(market, news_global, news_tw, taipei_time):
         for i, n in enumerate(news_global, 1):
             lines.append(f"{i}. {n}")
 
-    if news_tw:
-        lines += ["", "📰 台灣財經新聞"]
-        for i, n in enumerate(news_tw, 1):
-            lines.append(f"{i}. {n}")
-
     lines += ["", "════════════════════════", "由 GitHub Actions 自動發送"]
     return "\n".join(lines)
 
@@ -104,27 +185,37 @@ def send_telegram(text):
         headers={'Content-Type': 'application/json; charset=utf-8'}
     )
     res = urllib.request.urlopen(req, timeout=30).read()
-    result = json.loads(res.decode('utf-8'))
-    if result.get('ok'):
-        print('✅ Telegram sent successfully')
+    if json.loads(res).get('ok'):
+        print('✅ Telegram sent')
     else:
-        print('❌ Telegram error:', result)
+        print('❌ Telegram error:', res)
 
 
 def main():
     taipei_tz = pytz.timezone('Asia/Taipei')
     taipei_time = datetime.now(taipei_tz)
+    today_date = taipei_time.date()
+    yesterday_date = today_date - timedelta(days=1)
     print(f"Running at {taipei_time.strftime('%Y-%m-%d %H:%M:%S')} Taipei time")
+
+    print("Getting Google credentials...")
+    creds = get_google_credentials()
+
+    print("Fetching Gmail...")
+    emails = get_gmail_summary(creds, yesterday_date)
+
+    print("Fetching Calendar...")
+    cal_yesterday = get_calendar_events(creds, yesterday_date)
+    cal_today = get_calendar_events(creds, today_date)
 
     print("Fetching market data...")
     market = get_market_data()
 
     print("Fetching news...")
     news_global = get_rss_news('https://feeds.reuters.com/reuters/businessNews')
-    news_tw = get_rss_news('https://feeds.reuters.com/reuters/CNtopNews')
 
     print("Building report...")
-    report = build_report(market, news_global, news_tw, taipei_time)
+    report = build_report(emails, cal_yesterday, cal_today, market, news_global, taipei_time)
     print(report)
 
     print("Sending to Telegram...")
