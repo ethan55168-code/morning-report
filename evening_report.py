@@ -101,7 +101,7 @@ def get_us_market():
     return results
 
 
-def get_cnyes_news(max_items=5):
+def get_cnyes_news(max_items=8):
     categories = ['headline_all', 'tw_stock', 'intl_stock']
     news = []
     for cat in categories:
