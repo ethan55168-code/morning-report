@@ -245,9 +245,10 @@ def build_report(cal_today, market, news, macro, earnings, taipei_time):
         lines += macro
 
     if news:
-        lines += ["", "════════════════════════", "", "📰 昨晚財經新聞"]
+        lines += ["", "════════════════════════", "", "📰 昨晚財經新聞", ""]
         for i, t in enumerate(news, 1):
             lines.append(f"{i}. {t}")
+            lines.append("")
 
     lines += ["", "════════════════════════", "由 GitHub Actions 自動發送"]
     return "\n".join(lines)
