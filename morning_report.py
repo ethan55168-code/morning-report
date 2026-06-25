@@ -79,55 +79,60 @@ def get_market_data():
     return results
 
 
-import feedparser
-
-
-def get_all_news():
+def get_all_news(max_total=10):
     import feedparser
-    sections = []
+    all_titles = []
+    seen = set()
 
-    # 鉅亨網 - 試多個 endpoint
-    for cat in ['tw_stock', 'intl_stock', 'headline_all']:
+    def add_titles(titles):
+        for t in titles:
+            t = t.strip()
+            key = t.lower().replace(' ', '')
+            if t and key not in seen:
+                seen.add(key)
+                all_titles.append(t)
+
+    sources = [
+        # 台灣來源（可能被封鎖）
+        ('鉅亨-tw', 'cnyes_api', 'tw_stock'),
+        ('鉅亨-intl', 'cnyes_api', 'intl_stock'),
+        ('IEObserve', 'rss', 'https://www.ieobserve.com/feed/'),
+        ('IEObserve2', 'rss', 'https://www.ieobserve.com/must-read-rss/'),
+        ('財報狗', 'rss', 'https://statementdog.substack.com/feed'),
+        ('自由時報', 'rss', 'https://news.ltn.com.tw/rss/business.xml'),
+        # 國際備援（穩定可用）
+        ('BBC中文', 'rss', 'https://feeds.bbci.co.uk/zhongwen/trad/rss.xml'),
+        ('MarketWatch', 'rss', 'https://feeds.marketwatch.com/marketwatch/topstories/'),
+        ('BBC商業', 'rss', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
+    ]
+
+    for name, src_type, endpoint in sources:
+        if len(all_titles) >= max_total:
+            break
+        need = max_total - len(all_titles)
         try:
-            url = f"https://api.cnyes.com/media/api/v1/newslist/category/{cat}?limit=10"
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                'Accept': 'application/json',
-                'Referer': 'https://news.cnyes.com/',
-            })
-            res = json.loads(urllib.request.urlopen(req, timeout=10).read())
-            items = res.get('items', {}).get('data', [])
-            titles = [item.get('title', '').strip() for item in items[:4] if item.get('title')]
-            if titles:
-                sections.append(('鉅亨網', titles))
-                break
+            if src_type == 'cnyes_api':
+                url = f"https://api.cnyes.com/media/api/v1/newslist/category/{endpoint}?limit=10"
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Referer': 'https://news.cnyes.com/',
+                })
+                res = json.loads(urllib.request.urlopen(req, timeout=8).read())
+                titles = [i.get('title', '').strip() for i in res.get('items', {}).get('data', [])[:need] if i.get('title')]
+                add_titles(titles)
+                if titles:
+                    print(f"✓ {name}: {len(titles)} 篇")
+            else:
+                feed = feedparser.parse(endpoint)
+                titles = [e.title for e in feed.entries[:need] if hasattr(e, 'title') and e.title]
+                add_titles(titles)
+                if titles:
+                    print(f"✓ {name}: {len(titles)} 篇")
         except Exception as e:
-            print(f"鉅亨 {cat} failed: {e}")
+            print(f"✗ {name}: {e}")
 
-    # IEObserve - 用 feedparser 處理不標準 XML
-    try:
-        feed = feedparser.parse('https://www.ieobserve.com/feed/')
-        titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
-        if not titles:
-            feed = feedparser.parse('https://www.ieobserve.com/must-read-rss/')
-            titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
-        if titles:
-            sections.append(('IEObserve', titles))
-    except Exception as e:
-        print(f"IEObserve failed: {e}")
-
-    # 財報狗 - feedparser + 多個 URL 嘗試
-    for url in ['https://statementdog.substack.com/feed', 'https://statementdog.substack.com/feed.xml']:
-        try:
-            feed = feedparser.parse(url)
-            titles = [e.title for e in feed.entries[:4] if hasattr(e, 'title')]
-            if titles:
-                sections.append(('財報狗', titles))
-                break
-        except Exception as e:
-            print(f"財報狗 failed: {e}")
-
-    return sections
+    return all_titles[:max_total]
 
 
 def get_macro_data(api_key):
@@ -198,7 +203,7 @@ def fmt_row(name, data):
     return f"• {name}：{close_str}　{data['arrow']}{abs(data['pct']):.2f}%"
 
 
-def build_report(cal_today, market, news_sections, macro, earnings, taipei_time):
+def build_report(cal_today, market, news, macro, earnings, taipei_time):
     weekday_map = {
         'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
         'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六', 'Sunday': '星期日'
@@ -239,12 +244,10 @@ def build_report(cal_today, market, news_sections, macro, earnings, taipei_time)
         lines += ["", "════════════════════════", "", "📈 總經數據"]
         lines += macro
 
-    if news_sections:
+    if news:
         lines += ["", "════════════════════════", "", "📰 昨晚財經新聞"]
-        for source, titles in news_sections:
-            lines.append(f"\n【{source}】")
-            for i, t in enumerate(titles, 1):
-                lines.append(f"{i}. {t}")
+        for i, t in enumerate(news, 1):
+            lines.append(f"{i}. {t}")
 
     lines += ["", "════════════════════════", "由 GitHub Actions 自動發送"]
     return "\n".join(lines)
@@ -284,7 +287,7 @@ def main():
     market = get_market_data()
 
     print("Fetching news...")
-    news_sections = get_all_news()
+    news = get_all_news()
 
     print("Fetching macro data...")
     macro = get_macro_data(fred_api_key) if fred_api_key else []
@@ -293,7 +296,7 @@ def main():
     earnings = get_tech_earnings()
 
     print("Building report...")
-    report = build_report(cal_today, market, news_sections, macro, earnings, taipei_time)
+    report = build_report(cal_today, market, news, macro, earnings, taipei_time)
     print(report)
 
     print("Sending to Telegram...")
