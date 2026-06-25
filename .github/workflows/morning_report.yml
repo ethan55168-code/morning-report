@@ -1,0 +1,26 @@
+name: Morning Report
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 每天 07:00 台北時間 (UTC+8)
+  workflow_dispatch:       # 允許手動觸發測試
+
+jobs:
+  morning-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pytz
+
+      - name: Run morning report
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python morning_report.py
