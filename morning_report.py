@@ -106,13 +106,14 @@ def get_market_data():
 
 def get_rss_news(max_items=4):
     sources = [
-        ('全球', 'https://feeds.marketwatch.com/marketwatch/topstories/'),
-        ('全球', 'https://www.cnbc.com/id/10000664/device/rss/rss.html'),
-        ('全球', 'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml'),
-        ('全球', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
+        'https://udn.com/rssfeed/news/2/6638?ch=news',
+        'https://ctee.com.tw/feed',
+        'https://www.cna.com.tw/cna2018api/api/WD/CnaRss?keytype=1&value=financemarket',
+        'https://feeds.bbci.co.uk/news/business/rss.xml',
+        'https://feeds.marketwatch.com/marketwatch/topstories/',
     ]
     news = []
-    for label, url in sources:
+    for url in sources:
         if len(news) >= max_items:
             break
         try:
